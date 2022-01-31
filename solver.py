@@ -1,7 +1,9 @@
 import json
 import random
 from util import dict2arr, arr2dict, a2i, i2a
-from collections import Counter
+from enum import Enum
+from collections import Counter, defaultdict
+
 
 class Solver:
 
@@ -11,8 +13,14 @@ class Solver:
         all_words_dict = self.load_words(words_list_path)
         self.words_dict = {w: k for w, k in all_words_dict.items() if len(w) == self.number_of_letters}
         self.max_guesses = max_guesses
-        self.hotness_weights = {i: 5 for i in range(1, self.number_of_letters+1)} if not hotness_weights else hotness_weights
-        self.hotness_weights.update({0: 1, -1: float('-inf'), None: 0})
+        if hotness_weights is None:
+            self.hotness_weights = {}
+            self.hotness_weights.update({i: 5 for i in range(1, self.number_of_letters+1)})
+            self.hotness_weights.update({-i: 1 for i in range(1, self.number_of_letters+1)})
+            self.hotness_weights.update({HotnessType.WRONG.value: float('-inf'), None: 0})
+        else:
+            self.hotness_weights = hotness_weights
+
         print(f"Dictionary size: {len(self.words_dict)}")
 
     def load_words(self, file_path):
@@ -43,7 +51,7 @@ class Solver:
     def is_valid_by_hotness(self, word, letters_hotness):
         for letter in word:
             hv = letters_hotness.get(letter)
-            if hv and hv[0] == -1:
+            if hv and hv[0] == 0:
                 return False
         return True
 
@@ -52,14 +60,14 @@ class Solver:
         Returns hotness of a word relative to a target word. Both words need to be of same length
         Output is an array where the value at each index of the array indicates the closeness of the word.
         A value of >=1 at index `i` indicates the letter word[i] matches the letter target[i]. The value is the index i
-        A value of -1 at index `i` indicates the letter word[i] does not match the letter target[i]
-            and the letter word[i] does not appear at any other position in `target`
+        A value of <=-1 at index `i` indicates the letter word[i] matches the letter target[i]
+            but the letter word[i] appears at other position in `target`. The value is the index i
         A value of 0 at index `i` indicates the letter word[i] does not match the letter target[i]
-            but the letter word[i] appears at other position in `target`
+            and the letter word[i] does not appear at any other position in `target`
 
         :param word: str
         :param target: str
-        :return: [-1, 1, 0, ...]
+        :return: [-1, 2, 0, ...]
         """
         if len(word) != len(target):
             raise Exception(f"Input words {word} and {target} are not of the same length")
@@ -73,9 +81,9 @@ class Solver:
             if word[i] == target[i]:
                 res.append(i+1)
             elif word[i] != target[i] and word[i] in target_letters:
-                res.append(0)
+                res.append(-i-1)
             else:
-                res.append(-1)
+                res.append(0)
 
         h = WordHotness()
         h.update_word(word, res)
@@ -83,27 +91,45 @@ class Solver:
 
     def score_word(self, word, letters_hotness):
         score = 0
-        letter_freq = Counter(word)
-        for i, hv in enumerate(letters_hotness.hotness):
-            c = i2a(i)
-            if hv:
-                if hv[0] == -1:
-                    if c in word:
-                        # word has not allowed letter
-                        score += self.hotness_weights[-1]
-                elif hv[0] == 0:
-                    if c in word and letter_freq[c] == len(hv):
-                        # word has required letter
-                        score += self.hotness_weights[0]
+        wrong_letter_score = self.hotness_weights[HotnessType.WRONG.value]
+
+        # check letter frequency
+        word_letter_freq = Counter(word)
+        for letter, freq in word_letter_freq.items():
+            if letters_hotness.freq[a2i(letter)] is not None and freq < letters_hotness.freq[a2i(letter)]:
+                score += wrong_letter_score
+                break
+        for i, freq in enumerate(letters_hotness.freq):
+            letter = i2a(i)
+            if freq is not None and (word_letter_freq[letter] < freq or freq == 0 and word_letter_freq[letter] > 0):
+                score += wrong_letter_score
+                break
+
+        word_score = defaultdict(int)
+        for letter in set(word):
+            idx = a2i(letter)
+            for h in letters_hotness.hotness[idx]:
+                if h == 0:
+                    word_score[letter] = wrong_letter_score
+                    break
+                elif h > 0:
+                    if word[h-1] == letter:
+                        word_score[letter] = max(word_score[letter], self.hotness_weights[h])
                     else:
-                        # word does not have required letter
-                        score += self.hotness_weights[-1]
+                        word_score[letter] = wrong_letter_score
+                        break
                 else:
-                    for h in hv:
-                        if word[h-1] == c:
-                            score += self.hotness_weights[h]
+                    if letter == word[-h-1]:
+                        word_score[letter] = wrong_letter_score
+                        break
+                    else:
+                        possible_positions = [j for j in range(1, self.number_of_letters + 1) if -j not in letters_hotness.hotness[idx]]
+                        if len(possible_positions) == 1 and word[possible_positions[0] - 1] == letter:
+                            word_score[letter] = max(word_score[letter], self.hotness_weights[possible_positions[0] - 1])
                         else:
-                            score += self.hotness_weights[-1]
+                            word_score[letter] = max(word_score[letter], self.hotness_weights[h])
+
+        score += sum([score * letters_hotness.freq[a2i(letter)] for letter, score in word_score.items() if letters_hotness.freq[a2i(letter)] > 0])
 
         return score
 
@@ -136,7 +162,6 @@ class Solver:
         # repeat from wait for input
         target = self.random_word()
         letters_hotness = LettersHotness()
-        # print(target)
         for guess_number in range(1, self.max_guesses+1):
             while True:
                 guess = input(f"Guess next word. Current hotness of letters: \n{letters_hotness}\nGuess {guess_number}: ")
@@ -152,7 +177,7 @@ class Solver:
                 return
             else:
                 word_hotness = self.hotness(guess, target)
-                letters_hotness.update_word(guess, word_hotness, target)
+                letters_hotness.update_word(guess, word_hotness)
                 print(f"Your guess is not correct but close. Here're some suggestions: "
                       f"{', '.join([f'{word}({score})' for score, word in sorted(self.suggestions(letters_hotness, 10), reverse=True)])}, {self.score_word(target, letters_hotness)}")
                 print(word_hotness)
@@ -168,16 +193,17 @@ class Solver:
         # repeat
 
         letters_hotness = LettersHotness()
-        input_to_hotness_map = {'x': -1, '1': 1, '0': 0}
+        input_to_hotness_map = {'?': -1, '1': 1, 'x': 0}
         for i in range(1, self.max_guesses+1):
             while True:
                 try:
                     word = input(f"Type in guess {i}: ")
                     assert self.is_valid_word(word), f"{word} is an invalid word"
-                    word_hotness_input = list(input(f"Type in word hotness like (ex: 11x00): "))
-                    arr = [input_to_hotness_map[x] if input_to_hotness_map[x] <= 0 else (i + 1) for i, x in enumerate(word_hotness_input)]
+                    word_hotness_input = list(input(f"Type in word hotness like (ex: ??x11), ?(right but wrong pos), x (wrong char), 1 (right char right pos): "))
+                    arr = [input_to_hotness_map[x]*(i + 1) for i, x in enumerate(word_hotness_input)]
+
                     assert len(word) == len(word_hotness_input), "length of word and hotness must be the same"
-                    assert all([-1 <= x <= self.number_of_letters for x in arr]), "some input value are incorrect"
+                    assert all([-self.number_of_letters <= x <= self.number_of_letters for x in arr]), "some input value are incorrect"
 
                     if all([x >= 1 for x in arr]):
                         return
@@ -197,11 +223,17 @@ class Solver:
         return
 
 
+class HotnessType(Enum):
+    CORRECT_CHAR_POS = 1
+    WRONG = 0
+    CORRECT_CHAR = -1
+
 
 class Hotness:
-    hotness_to_char_mapping = {i: str(i) for i in range(1, 27)}
-    hotness_to_char_mapping.update({-1: 'X', 0: 'O', 1: '1', None: ' '})
+    hotness_to_char_mapping = {i: str(i) for i in range(-27, 27)}
+    hotness_to_char_mapping.update({HotnessType.WRONG.value: 'x', None: ' '})
     hotness = None
+    freq = None
 
 
 class WordHotness(Hotness):
@@ -224,7 +256,7 @@ class WordHotness(Hotness):
 
 class LettersHotness(Hotness):
 
-    def __init__(self, hotness=None):
+    def __init__(self, hotness=None, freq=None):
         """
         An array representing the hotness of all alphabetical letters.
         1->N for the position in a word
@@ -234,38 +266,86 @@ class LettersHotness(Hotness):
         """
         if hotness is None:
             hotness = {}
+        if freq is None:
+            freq = {}
         self.hotness = dict2arr(hotness, [])
+        self.freq = dict2arr(freq, None)
 
-    def update_word(self, word, word_hotness, target=None):
+    def update_word(self, word, word_hotness):
+        freq = defaultdict(int)
+        for i, h in enumerate(word_hotness.hotness):
+            letter = word[i]
+            idx = a2i(letter)
+            f = 0 if h == 0 else 1
+            freq[idx] += f
+
+        for idx, f in freq.items():
+            self.freq[idx] = f
+
         new_letter_hotness = dict2arr({}, [])
         for wi, wh in enumerate(word_hotness.hotness):
             c = word[wi]
-            if not (new_letter_hotness[a2i(c)] and new_letter_hotness[a2i(c)][0] == -1):
+            # case when letter is correct but duplicated,
+            # the hotness of the duplicated letter carries positional information
+            if wh == 0 and freq[a2i(c)] > 0:
+                new_letter_hotness[a2i(c)].append(-wi-1)
+            else:
                 new_letter_hotness[a2i(c)].append(wh)
 
+        # one letter:
+        #   case 1: [-1], [-2]
+        #   case 2: [-1], [4]
+        #   case 3: [4], [-1]
+        #   case 4: [4], [4]
+        #   case 5: [0], [0]
+        # multiple letters:
+        #   case 6: [-1], [-2]
+        #   case 7: [-1], [-1, -2]
+        #   case 8: [-1], [-2, -3]
+        #   case 9: [-1], [-2, 4]
+        #   case 10: [-1], [3, 4]
+        #   case 11: [-1, -2], [-1, -2]
+        #   case 12: [-1, -2], [-3, -4]
+        #   case 13: [-1, -2], [-3, 4]
+        #   case 7: [-1, -2], [3, 4]
+        #   case 3: [4], [-1]
+        #   case 3: [4], [-1, -2]
+        #   case 3: [4], [-1, 4]
+        #   case 3: [4], [5]
+        #   case 3: [4], [4, 5]
+
         for i, hv in enumerate(new_letter_hotness):
-            # if hv:
-            #     print('i', i, 'i2a', i2a(i), 'hotness', self.hotness[i], 'new_hotness', hv)
             if hv:
                 if self.hotness[i]:
-                    if self.hotness[i][-1] <= 0 and 0 <= min(hv):
-                        self.hotness[i] = hv
-                    elif 1 <= self.hotness[i][-1] and (1 <= min(hv) or len(self.hotness[i]) < len(hv)):
-                        self.hotness[i] = list(set(self.hotness[i] + hv))
+                    if self.hotness[i][-1] == HotnessType.WRONG.value:
+                        continue
+                    else:
+                        self.hotness[i] = sorted(set(self.hotness[i] + hv))
                 else:
-                    self.hotness[i] = hv
-            # if hv:
-            #     print('--combined', self.hotness[i])
+                    self.hotness[i] = sorted(set(hv))
 
     def get(self, letter):
         return self.hotness[a2i(letter)]
 
     def __str__(self):
-        res = f"[{' '.join([(i2a(i)).rjust(3, ' ') for i,h in enumerate(self.hotness)])}]"
+        rpad = 8
+        res = f"[{' '.join([(i2a(i)).rjust(rpad, ' ') for i,h in enumerate(self.hotness)])}]"
         res += "\n"
-        res += f"[{' '.join([','.join([self.hotness_to_char_mapping[h] for h in hv]).rjust(3, ' ') for i,hv in enumerate(self.hotness)])}]"
+        res += f"[{' '.join([','.join([self.hotness_to_char_mapping[h] for h in hv]).rjust(rpad, ' ') for i,hv in enumerate(self.hotness)])}]"
+        res += "\n"
+        res += f"[{' '.join([(str(f) if f is not None else '').rjust(rpad, ' ') for i,f in enumerate(self.freq)])}]"
 
         return res
+
+    def copy(self):
+        return self.__copy__()
+
+    def __copy__(self):
+        o = LettersHotness()
+        o.hotness = self.hotness.copy()
+        o.freq = self.freq.copy()
+        return o
+
 
 if __name__ == '__main__':
     number_of_letters = 5

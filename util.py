@@ -16,16 +16,16 @@ def dict2arr(dictionary, default=None):
     :return: [v1, v2, ... ]
     """
     alphabet_length = 26
-    res = [default.copy() for _ in range(alphabet_length)]
+    res = [default.copy() if type(default) in {list, set, dict} else default for _ in range(alphabet_length)]
     for l, v in dictionary.items():
-        if default is None:
-            res[a2i(l)] = v
-        elif type(default) is list:
+        if type(default) is list:
             res[a2i(l)] = v if type(v) is list else [v]
         elif type(default) is set:
             res[a2i(l)] = v if type(v) is set else {v}
         elif type(default) is dict:
             res[a2i(l)] = v if type(v) is dict else {v: 1}
+        else:
+            res[a2i(l)] = v
 
     return res
 

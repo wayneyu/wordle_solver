@@ -1,0 +1,6 @@
+Todo:
+
+Done
+1. Negative hotness: change hotness 0 to -i, with i = position of the letter in a previous guess
+1. Change -1 hotness to 0
+1. Score letter by excluding by negative hotness, after changing to negative hotness
